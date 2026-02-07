@@ -7,7 +7,7 @@
 **Быстрый, безопасный и красивый браузер с открытым исходным кодом**
 
 [![GitHub License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![GitHub Stars](https://img.shields.io/github/stars/anomalyco/smus-browser?style=social)](https://github.com/anomalyco/smus-browser)
+[![GitHub Stars](https://img.shields.io/github/stars/THWEDOKA/smus-browser?style=social)](https://github.com/anomalyco/smus-browser)
 [![Built with Electron](https://img.shields.io/badge/Built%20with-Electron-47848F?style=flat-square&logo=electron)](https://www.electronjs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![React](https://img.shields.io/badge/React-61DAFB?style=flat-square&logo=react&logoColor=black)](https://react.dev/)
