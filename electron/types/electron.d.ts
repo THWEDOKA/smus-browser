@@ -44,5 +44,18 @@ interface Window {
     onEnterFullscreen: (callback: (data: { tabId: number }) => void) => void;
     onLeaveFullscreen: (callback: (data: { tabId: number }) => void) => void;
     onZoomChanged: (callback: (data: { tabId: number; zoomLevel: number }) => void) => void;
+
+    // Downloads
+    getDownloads: () => Promise<any[]>;
+    confirmDownload: (id: string, filename: string, url: string, fileSize: number) => Promise<{ success: boolean; error?: string }>;
+    cancelDownloadRequest: (id: string) => Promise<{ success: boolean }>;
+    pauseDownload: (id: string) => Promise<{ success: boolean; error?: string }>;
+    resumeDownload: (id: string) => Promise<{ success: boolean; error?: string }>;
+    cancelDownload: (id: string) => Promise<{ success: boolean; error?: string }>;
+    openDownloadsFolder: () => Promise<{ success: boolean }>;
+    removeDownload: (id: string) => Promise<{ success: boolean }>;
+    onDownloadRequested: (callback: (data: any) => void) => void;
+    onDownloadProgress: (callback: (data: any) => void) => void;
+    onDownloadDone: (callback: (data: any) => void) => void;
   };
 }

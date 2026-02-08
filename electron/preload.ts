@@ -96,10 +96,48 @@ const electronAPI = {
      ipcRenderer.on('leave-fullscreen', (event, data) => callback(data));
    },
 
-   onZoomChanged: (callback: (data: { tabId: number; zoomLevel: number }) => void) => {
-     ipcRenderer.on('tab-zoom-changed', (event, data) => callback(data));
-   },
- };
+    onZoomChanged: (callback: (data: { tabId: number; zoomLevel: number }) => void) => {
+      ipcRenderer.on('tab-zoom-changed', (event, data) => callback(data));
+    },
+
+    // Downloads управление
+    getDownloads: () =>
+      ipcRenderer.invoke('get-downloads'),
+
+    pauseDownload: (id: string) =>
+      ipcRenderer.invoke('pause-download', { id }),
+
+    resumeDownload: (id: string) =>
+      ipcRenderer.invoke('resume-download', { id }),
+
+    cancelDownload: (id: string) =>
+      ipcRenderer.invoke('cancel-download', { id }),
+
+    openDownloadsFolder: () =>
+      ipcRenderer.invoke('open-downloads-folder'),
+
+    removeDownload: (id: string) =>
+      ipcRenderer.invoke('remove-download', { id }),
+
+    // Download события
+    onDownloadRequested: (callback: (data: any) => void) => {
+      ipcRenderer.on('download-requested', (event, data) => callback(data));
+    },
+
+    confirmDownload: (id: string, filename: string, url: string, fileSize: number) =>
+      ipcRenderer.invoke('confirm-download', { downloadId: id, filename, url, fileSize }),
+
+    cancelDownloadRequest: (id: string) =>
+      ipcRenderer.invoke('cancel-download-request', { downloadId: id }),
+
+    onDownloadProgress: (callback: (data: any) => void) => {
+      ipcRenderer.on('download-progress', (event, data) => callback(data));
+    },
+
+    onDownloadDone: (callback: (data: any) => void) => {
+      ipcRenderer.on('download-done', (event, data) => callback(data));
+    },
+  };
 
 // Экспортируем API в window.electron
 contextBridge.exposeInMainWorld('electron', electronAPI);

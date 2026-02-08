@@ -1,5 +1,6 @@
-import { app, BrowserWindow, BrowserView, ipcMain, session } from 'electron';
+import { app, BrowserWindow, BrowserView, ipcMain, session, DownloadItem } from 'electron';
 import * as path from 'path';
+import * as fs from 'fs';
 
 // Базовый блокировщик рекламы: домены для блокировки (можно расширить)
 const ADBLOCK_HOSTS = new Set([
@@ -27,6 +28,25 @@ let vpnProxy: string | null = null;
 let isVpnConnected = false;
 let fullscreenTabId: number | null = null;
 
+// Хранилище для скачиваний
+interface Download {
+  id: string;
+  filename: string;
+  url: string;
+  filePath: string;
+  totalBytes: number;
+  receivedBytes: number;
+  state: 'in-progress' | 'completed' | 'cancelled' | 'interrupted';
+  startTime: number;
+  finishTime?: number;
+  speed: number; // bytes per second
+  paused: boolean;
+}
+
+const downloads = new Map<string, Download>();
+const downloadItems = new Map<string, DownloadItem>();
+let downloadsFolderPath = '';
+
 const isDev = !app.isPackaged;
 
 // Высота панели (тайтлбар + адресная строка). Совпадает с UI для корректного resize.
@@ -50,28 +70,34 @@ function updateActiveViewBounds() {
 }
 
 function createWindow() {
-  mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
-    minWidth: 800,
-    minHeight: 600,
-    frame: false,
-    transparent: false,
-    backgroundColor: '#32463d',
-    center: true,
-    show: false, // Не показываем пока не загрузится
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      webSecurity: true,
-    },
-  });
+   // Инициализируем папку скачиваний
+   downloadsFolderPath = path.join(app.getPath('downloads'), 'SMUS Browser');
+   if (!fs.existsSync(downloadsFolderPath)) {
+     fs.mkdirSync(downloadsFolderPath, { recursive: true });
+   }
 
-  // Показываем окно когда оно готово
-  mainWindow.once('ready-to-show', () => {
-    mainWindow?.show();
-  });
+   mainWindow = new BrowserWindow({
+     width: 1400,
+     height: 900,
+     minWidth: 800,
+     minHeight: 600,
+     frame: false,
+     transparent: false,
+     backgroundColor: '#32463d',
+     center: true,
+     show: false, // Не показываем пока не загрузится
+     webPreferences: {
+       preload: path.join(__dirname, 'preload.js'),
+       contextIsolation: true,
+       nodeIntegration: false,
+       webSecurity: true,
+     },
+   });
+
+   // Показываем окно когда оно готово
+   mainWindow.once('ready-to-show', () => {
+     mainWindow?.show();
+   });
 
   // Загружаем UI
   if (isDev) {
@@ -300,15 +326,103 @@ function createTab(tabId: number, url: string): BrowserView {
       mainWindow?.webContents.send('enter-fullscreen', { tabId });
     });
 
-    view.webContents.on('leave-html-full-screen', () => {
-      fullscreenTabId = null;
-      updateActiveViewBounds();
-      mainWindow?.webContents.send('leave-fullscreen', { tabId });
-    });
+     view.webContents.on('leave-html-full-screen', () => {
+       fullscreenTabId = null;
+       updateActiveViewBounds();
+       mainWindow?.webContents.send('leave-fullscreen', { tabId });
+     });
 
-   tabs.set(tabId, view);
-   return view;
- }
+      // Обработка скачиваний - отправляем запрос подтверждения
+      view.webContents.session.on('will-download', (event, item, webContents) => {
+        event.preventDefault(); // Пауза до подтверждения
+        
+        const downloadId = `download-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        const filename = item.getFilename();
+        const filePath = path.join(downloadsFolderPath, filename);
+        const fileSize = item.getTotalBytes();
+
+        // Отправляем запрос подтверждения в React
+        mainWindow?.webContents.send('download-requested', {
+          id: downloadId,
+          filename,
+          url: item.getURL(),
+          fileSize,
+          item, // Передаем item для последующей обработки
+        });
+
+        // Сохраняем item для доступа после подтверждения
+        downloadItems.set(downloadId, item);
+      });
+
+      // IPC обработчик для подтверждения загрузки
+      ipcMain.handle('confirm-download', async (event, { downloadId, filename, url, fileSize }) => {
+        const item = downloadItems.get(downloadId);
+        if (!item) return { success: false, error: 'Download item not found' };
+
+        const filePath = path.join(downloadsFolderPath, filename);
+
+        const download: Download = {
+          id: downloadId,
+          filename,
+          url,
+          filePath,
+          totalBytes: fileSize,
+          receivedBytes: 0,
+          state: 'in-progress',
+          startTime: Date.now(),
+          speed: 0,
+          paused: false,
+        };
+
+        downloads.set(downloadId, download);
+        item.setSavePath(filePath);
+
+        // Обработчики скачивания
+        setupDownloadHandlers(downloadId, item, download, filename, filePath);
+
+        return { success: true };
+      });
+
+      // Функция для настройки обработчиков скачивания
+      const setupDownloadHandlers = (downloadId: string, item: DownloadItem, download: Download, filename: string, filePath: string) => {
+        item.on('updated', () => {
+          const received = item.getReceivedBytes();
+          const total = item.getTotalBytes();
+          const elapsed = (Date.now() - download.startTime) / 1000;
+          const speed = elapsed > 0 ? received / elapsed : 0;
+
+          download.receivedBytes = received;
+          download.speed = speed;
+
+          mainWindow?.webContents.send('download-progress', {
+            id: downloadId,
+            filename,
+            totalBytes: total,
+            receivedBytes: received,
+            progress: total > 0 ? (received / total) * 100 : 0,
+            speed,
+            state: download.state,
+            paused: item.isPaused(),
+          });
+        });
+
+        item.on('done', (event, state) => {
+          download.state = state as any;
+          download.finishTime = Date.now();
+
+          mainWindow?.webContents.send('download-done', {
+            id: downloadId,
+            filename,
+            filePath,
+            state,
+            totalBytes: download.totalBytes,
+          });
+        });
+      };
+
+    tabs.set(tabId, view);
+    return view;
+  }
 
 function getErrorType(errorCode: number, errorDescription: string): 'connection' | 'dns' | 'blocked' | 'timeout' | 'unknown' {
   const desc = errorDescription.toLowerCase();
@@ -560,7 +674,159 @@ ipcMain.on('page-zoom', (event, { action }) => {
   if (newZoom !== currentZoom) {
     view.webContents.setZoomFactor(newZoom);
     mainWindow?.webContents.send('tab-zoom-changed', { tabId: activeTabId, zoomLevel: newZoom });
+   }
+});
+
+// Cancel download request - отклонить скачивание
+ipcMain.handle('cancel-download-request', async (event, { downloadId }) => {
+  try {
+    const item = downloadItems.get(downloadId);
+    if (item) {
+      item.cancel();
+    }
+    downloadItems.delete(downloadId);
+    return { success: true };
+  } catch (error) {
+    console.error('Error cancelling download request:', error);
+    return { success: false, error: String(error) };
   }
+});
+
+// Confirm download - начать скачивание после подтверждения
+ipcMain.handle('confirm-download', async (event, { downloadId, filename, url, fileSize }) => {
+  try {
+    const item = downloadItems.get(downloadId);
+    if (!item) return { success: false, error: 'Download item not found' };
+
+    const filePath = path.join(downloadsFolderPath, filename);
+
+    const download: Download = {
+      id: downloadId,
+      filename,
+      url,
+      filePath,
+      totalBytes: fileSize,
+      receivedBytes: 0,
+      state: 'in-progress',
+      startTime: Date.now(),
+      speed: 0,
+      paused: false,
+    };
+
+    downloads.set(downloadId, download);
+    item.setSavePath(filePath);
+
+    // Обработчики для отслеживания прогресса
+    item.on('updated', () => {
+      const received = item.getReceivedBytes();
+      const total = item.getTotalBytes();
+      const elapsed = (Date.now() - download.startTime) / 1000;
+      const speed = elapsed > 0 ? received / elapsed : 0;
+
+      download.receivedBytes = received;
+      download.speed = speed;
+
+      mainWindow?.webContents.send('download-progress', {
+        id: downloadId,
+        filename,
+        totalBytes: total,
+        receivedBytes: received,
+        progress: total > 0 ? (received / total) * 100 : 0,
+        speed,
+        state: download.state,
+        paused: item.isPaused(),
+      });
+    });
+
+    // Обработчик завершения
+    item.on('done', (event, state) => {
+      download.state = state as any;
+      download.finishTime = Date.now();
+
+      mainWindow?.webContents.send('download-done', {
+        id: downloadId,
+        filename,
+        filePath,
+        state,
+        totalBytes: download.totalBytes,
+      });
+    });
+
+    return { success: true };
+  } catch (error) {
+    console.error('Error confirming download:', error);
+    return { success: false, error: String(error) };
+  }
+});
+
+// Downloads обработчики
+ipcMain.handle('get-downloads', async () => {
+  const downloadsList = Array.from(downloads.values()).map(d => ({
+    id: d.id,
+    filename: d.filename,
+    url: d.url,
+    totalBytes: d.totalBytes,
+    receivedBytes: d.receivedBytes,
+    state: d.state,
+    progress: d.totalBytes > 0 ? (d.receivedBytes / d.totalBytes) * 100 : 0,
+    speed: d.speed,
+    startTime: d.startTime,
+    finishTime: d.finishTime,
+    paused: d.paused,
+  }));
+  return downloadsList;
+});
+
+ipcMain.handle('pause-download', async (event, { id }) => {
+  const item = downloadItems.get(id);
+  if (item) {
+    item.pause();
+    const download = downloads.get(id);
+    if (download) {
+      download.paused = true;
+    }
+    return { success: true };
+  }
+  return { success: false, error: 'Download not found' };
+});
+
+ipcMain.handle('resume-download', async (event, { id }) => {
+  const item = downloadItems.get(id);
+  if (item && item.canResume()) {
+    item.resume();
+    const download = downloads.get(id);
+    if (download) {
+      download.paused = false;
+    }
+    return { success: true };
+  }
+  return { success: false, error: 'Cannot resume download' };
+});
+
+ipcMain.handle('cancel-download', async (event, { id }) => {
+  const item = downloadItems.get(id);
+  if (item) {
+    item.cancel();
+    const download = downloads.get(id);
+    if (download) {
+      download.state = 'cancelled';
+    }
+    downloadItems.delete(id);
+    return { success: true };
+  }
+  return { success: false, error: 'Download not found' };
+});
+
+ipcMain.handle('open-downloads-folder', async () => {
+  const { shell } = require('electron');
+  await shell.openPath(downloadsFolderPath);
+  return { success: true };
+});
+
+ipcMain.handle('remove-download', async (event, { id }) => {
+  downloads.delete(id);
+  downloadItems.delete(id);
+  return { success: true };
 });
 
 // Горячие клавиши

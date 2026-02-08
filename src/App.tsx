@@ -68,10 +68,13 @@ export default function App() {
    const [vpnStatus, setVpnStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected');
    const [toasts, setToasts] = useState<Array<{ id: string; type: 'success' | 'error' | 'info'; message: string; duration?: number }>>([]);
    const [fullscreenTabId, setFullscreenTabId] = useState<number | null>(null);
-   const [zoomLevels, setZoomLevels] = useState<Record<number, number>>({});
-   const [downloads, setDownloads] = useState<Array<any>>([]);
-   const tabsRef = useRef(tabs);
-   const activeTabIdRef = useRef(activeTabId);
+    const [zoomLevels, setZoomLevels] = useState<Record<number, number>>({});
+    const [downloads, setDownloads] = useState<Array<any>>([]);
+    const [downloadRequest, setDownloadRequest] = useState<any>(null);
+    const [animatingDownload, setAnimatingDownload] = useState<any>(null);
+    const downloadButtonRef = useRef<HTMLButtonElement>(null);
+    const tabsRef = useRef(tabs);
+    const activeTabIdRef = useRef(activeTabId);
    tabsRef.current = tabs;
    activeTabIdRef.current = activeTabId;
 
@@ -229,16 +232,21 @@ export default function App() {
       setFullscreenTabId(null);
     });
 
-    // Обработка zoom событий
-    window.electron.onZoomChanged((data) => {
-      setZoomLevels(prev => ({
-        ...prev,
-        [data.tabId]: data.zoomLevel
-      }));
-    });
+     // Обработка zoom событий
+     window.electron.onZoomChanged((data) => {
+       setZoomLevels(prev => ({
+         ...prev,
+         [data.tabId]: data.zoomLevel
+       }));
+     });
 
-    // Обработка download событий
-    window.electron.onDownloadProgress((data) => {
+     // Обработка запроса на скачивание
+     window.electron.onDownloadRequested((data) => {
+       setDownloadRequest(data);
+     });
+
+     // Обработка download событий
+     window.electron.onDownloadProgress((data) => {
       setDownloads(prev => {
         const index = prev.findIndex(d => d.id === data.id);
         if (index >= 0) {
@@ -254,21 +262,34 @@ export default function App() {
       });
     });
 
-    window.electron.onDownloadDone((data) => {
-      setDownloads(prev => {
-        const index = prev.findIndex(d => d.id === data.id);
-        if (index >= 0) {
-          const updated = [...prev];
-          updated[index] = {
-            ...updated[index],
-            state: data.state,
-            completed: true,
-          };
-          return updated;
-        }
-        return prev;
-      });
-    });
+     window.electron.onDownloadDone((data) => {
+       setDownloads(prev => {
+         const index = prev.findIndex(d => d.id === data.id);
+         if (index >= 0) {
+           const updated = [...prev];
+           updated[index] = {
+             ...updated[index],
+             state: data.state,
+             completed: true,
+           };
+           
+           // Trigger animation and toast when download completes
+           if (data.state === 'completed') {
+             const downloadItem = updated[index];
+             setAnimatingDownload(downloadItem);
+             
+             // Play animation for 1 second, then show toast
+             setTimeout(() => {
+               setAnimatingDownload(null);
+               showToast('success', `Файл загружен: ${downloadItem.filename}`);
+             }, 1000);
+           }
+           
+           return updated;
+         }
+         return prev;
+       });
+     });
 
     window.electron.onAppShortcut((action) => {
        const currentTabs = tabsRef.current;
@@ -878,23 +899,26 @@ export default function App() {
             >
               <History size={20} className="text-white" />
             </button>
-            <button
-              onClick={() => {
-                window.electron.getDownloads().then(dlList => {
-                  setDownloads(dlList);
-                  openDownloads();
-                });
-              }}
-              className="p-1.5 hover:bg-white/10 rounded-full transition-colors relative"
-              title="Загрузки"
-            >
-              <Download size={20} className="text-white" />
-              {downloads.length > 0 && (
-                <span className="absolute top-0 right-0 w-5 h-5 bg-red-500 text-white text-xs rounded-full flex items-center justify-center">
-                  {downloads.filter(d => d.state === 'in-progress').length || ''}
-                </span>
-              )}
-            </button>
+             <button
+               ref={downloadButtonRef}
+               onClick={() => {
+                 window.electron.getDownloads().then(dlList => {
+                   setDownloads(dlList);
+                   openDownloads();
+                 });
+               }}
+               className={`p-1.5 hover:bg-white/10 rounded-full transition-colors relative ${
+                 animatingDownload ? 'animate-download-pulse' : ''
+               }`}
+               title="Загрузки"
+             >
+               <Download size={20} className="text-white" />
+               {downloads.length > 0 && (
+                 <span className="absolute top-0 right-0 w-5 h-5 bg-red-500 text-white text-xs rounded-full flex items-center justify-center">
+                   {downloads.filter(d => d.state === 'in-progress').length || ''}
+                 </span>
+               )}
+             </button>
             <button
               onClick={openSettings}
               className="p-1.5 hover:bg-white/10 rounded-full transition-colors"
@@ -1984,8 +2008,167 @@ export default function App() {
          </div>
        )}
 
-       {/* Toast Notifications */}
-       <div className="fixed bottom-6 right-6 z-[9999] space-y-3 pointer-events-none">
+        {/* Animated Download Transfer */}
+        {animatingDownload && downloadButtonRef.current && (
+          (() => {
+            const buttonRect = downloadButtonRef.current.getBoundingClientRect();
+            const buttonCenterX = buttonRect.left + buttonRect.width / 2;
+            const buttonCenterY = buttonRect.top + buttonRect.height / 2;
+            
+            // Calculate translation from center to button
+            const tx = buttonCenterX - window.innerWidth / 2;
+            const ty = buttonCenterY - window.innerHeight / 2;
+            
+            return (
+              <div
+                className="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-[9998] pointer-events-none"
+                style={{
+                  '--tx': `${tx}px`,
+                  '--ty': `${ty}px`,
+                } as React.CSSProperties}
+              >
+                <div className="animate-download-transfer">
+                  <div className={`w-12 h-12 rounded-lg flex items-center justify-center shadow-2xl ${
+                    isDarkMode ? 'bg-green-500/30' : 'bg-green-500/40'
+                  }`}>
+                    <Download size={24} className={isDarkMode ? 'text-green-400' : 'text-green-300'} />
+                  </div>
+                </div>
+              </div>
+            );
+          })()
+        )}
+
+        {/* Download Confirmation Dialog */}
+        {downloadRequest && (
+          <div className="fixed inset-0 z-[10000] flex items-center justify-center pointer-events-none">
+            {/* Overlay with blur */}
+            <div 
+              className="absolute inset-0 bg-black/40 backdrop-blur-sm pointer-events-auto"
+              onClick={() => {
+                window.electron.cancelDownloadRequest(downloadRequest.id);
+                setDownloadRequest(null);
+              }}
+            />
+            
+            {/* Dialog */}
+            <div 
+              className={`relative z-[10001] rounded-3xl p-8 w-96 shadow-2xl border pointer-events-auto animate-scale-in transform transition-all ${
+                isDarkMode 
+                  ? 'bg-[#2a2a2a] border-white/20' 
+                  : 'bg-white border-gray-200'
+              }`}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Close button */}
+              <button
+                onClick={() => {
+                  window.electron.cancelDownloadRequest(downloadRequest.id);
+                  setDownloadRequest(null);
+                }}
+                className={`absolute top-4 right-4 p-2 rounded-full transition-colors ${
+                  isDarkMode
+                    ? 'hover:bg-white/10'
+                    : 'hover:bg-gray-100'
+                }`}
+              >
+                <X size={20} className={isDarkMode ? 'text-white/70' : 'text-gray-600'} />
+              </button>
+
+              {/* File Icon */}
+              <div className="flex justify-center mb-6">
+                <div className={`w-16 h-16 rounded-2xl flex items-center justify-center ${
+                  isDarkMode 
+                    ? 'bg-green-500/20' 
+                    : 'bg-green-500/15'
+                }`}>
+                  <Download size={32} className={isDarkMode ? 'text-green-400' : 'text-green-500'} />
+                </div>
+              </div>
+
+              {/* Title */}
+              <h2 className={`text-center text-lg font-light mb-2 ${
+                isDarkMode 
+                  ? 'text-white' 
+                  : 'text-black'
+              }`}>
+                Подтверждение загрузки
+              </h2>
+
+              {/* Filename */}
+              <p className={`text-center text-sm font-medium mb-4 truncate px-2 ${
+                isDarkMode 
+                  ? 'text-gray-300' 
+                  : 'text-gray-700'
+              }`} title={downloadRequest.filename}>
+                {downloadRequest.filename}
+              </p>
+
+              {/* File size */}
+              <p className={`text-center text-xs mb-6 ${
+                isDarkMode 
+                  ? 'text-gray-500' 
+                  : 'text-gray-500'
+              }`}>
+                {(() => {
+                  const bytes = downloadRequest.fileSize || 0;
+                  if (bytes === 0) return 'Размер неизвестен';
+                  const k = 1024;
+                  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+                  const i = Math.floor(Math.log(bytes) / Math.log(k));
+                  return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+                })()}
+              </p>
+
+              {/* Buttons */}
+              <div className="flex gap-3">
+                <button
+                  onClick={async () => {
+                    await window.electron.confirmDownload(
+                      downloadRequest.id,
+                      downloadRequest.filename,
+                      downloadRequest.url,
+                      downloadRequest.fileSize
+                    );
+                    setDownloadRequest(null);
+                  }}
+                  className={`flex-1 px-4 py-3 rounded-lg font-light transition-all transform hover:scale-105 ${
+                    isDarkMode
+                      ? 'bg-green-500/30 hover:bg-green-500/50 text-green-200 border border-green-500/40'
+                      : 'bg-green-500/30 hover:bg-green-500/50 text-white border border-green-400/50'
+                  }`}
+                >
+                  Загрузить
+                </button>
+                <button
+                  onClick={async () => {
+                    await window.electron.cancelDownloadRequest(downloadRequest.id);
+                    setDownloadRequest(null);
+                  }}
+                  className={`flex-1 px-4 py-3 rounded-lg font-light transition-all transform hover:scale-105 ${
+                    isDarkMode
+                      ? 'bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30'
+                      : 'bg-red-500/20 hover:bg-red-500/30 text-red-600 border border-red-400/30'
+                  }`}
+                >
+                  Отмена
+                </button>
+              </div>
+
+              {/* Info text */}
+              <p className={`text-center text-xs mt-4 ${
+                isDarkMode 
+                  ? 'text-gray-500' 
+                  : 'text-gray-500'
+              }`}>
+                Файл сохранится в папку загрузок
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Toast Notifications */}
+        <div className="fixed bottom-6 right-6 z-[9999] space-y-3 pointer-events-none">
          {toasts.map((toast) => (
            <div
              key={toast.id}
