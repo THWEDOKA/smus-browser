@@ -64,9 +64,42 @@ const electronAPI = {
   },
 
   onAppShortcut: (callback: (action: string) => void) => {
-    ipcRenderer.on('app-shortcut', (event, action: string) => callback(action));
-  },
-};
+     ipcRenderer.on('app-shortcut', (event, action: string) => callback(action));
+   },
+
+   // VPN управление
+   connectVPN: (vpnKey: string) =>
+     ipcRenderer.invoke('connect-vpn', { vpnKey }),
+
+   disconnectVPN: () =>
+     ipcRenderer.invoke('disconnect-vpn'),
+
+   // Zoom управление
+   pageZoom: (action: 'zoom-in' | 'zoom-out') =>
+     ipcRenderer.send('page-zoom', { action }),
+
+   zoomIn: (tabId: number) =>
+     ipcRenderer.invoke('zoom-in', { tabId }),
+
+   zoomOut: (tabId: number) =>
+     ipcRenderer.invoke('zoom-out', { tabId }),
+
+   zoomReset: (tabId: number) =>
+     ipcRenderer.invoke('zoom-reset', { tabId }),
+
+   // Fullscreen события
+   onEnterFullscreen: (callback: (data: { tabId: number }) => void) => {
+     ipcRenderer.on('enter-fullscreen', (event, data) => callback(data));
+   },
+
+   onLeaveFullscreen: (callback: (data: { tabId: number }) => void) => {
+     ipcRenderer.on('leave-fullscreen', (event, data) => callback(data));
+   },
+
+   onZoomChanged: (callback: (data: { tabId: number; zoomLevel: number }) => void) => {
+     ipcRenderer.on('tab-zoom-changed', (event, data) => callback(data));
+   },
+ };
 
 // Экспортируем API в window.electron
 contextBridge.exposeInMainWorld('electron', electronAPI);

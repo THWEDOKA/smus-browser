@@ -274,34 +274,24 @@ function createTab(tabId: number, url: string): BrowserView {
      }
    });
 
-   // Обработка zoom (Ctrl + колесико) через web-contents sessions
-   view.webContents.on('before-input-event', (event, input) => {
-     // Проверяем Ctrl/Cmd + скроллинг
-     if ((input.control || input.meta) && input.type === 'mouseWheel') {
-       const wheelInput = input as any;
-       
-       if (wheelInput.deltaY !== undefined) {
-         event.preventDefault();
-         
-         const currentZoom = view.webContents.getZoomFactor();
-         let newZoom = currentZoom;
-         
-         // deltaY > 0 = вверх (zoom in)
-         if (wheelInput.deltaY > 0) {
-           newZoom = Math.min(currentZoom + 0.1, 3.0);
-         } 
-         // deltaY < 0 = вниз (zoom out)
-         else if (wheelInput.deltaY < 0) {
-           newZoom = Math.max(currentZoom - 0.1, 0.3);
-         }
-         
-         if (newZoom !== currentZoom) {
-           view.webContents.setZoomFactor(newZoom);
-           mainWindow?.webContents.send('tab-zoom-changed', { tabId, zoomLevel: newZoom });
-         }
-       }
-     }
-   });
+    // Обработка zoom (Ctrl + колесико) через JavaScript injection
+    view.webContents.on('dom-ready', () => {
+      view.webContents.executeJavaScript(`
+        (function() {
+          document.addEventListener('wheel', function(e) {
+            if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+              e.preventDefault();
+              // Отправляем информацию о scroll через window.electron API
+              const isZoomIn = e.deltaY < 0; // вверх = уменьшение deltaY = zoom in
+              const action = isZoomIn ? 'zoom-in' : 'zoom-out';
+              if (window.electron && window.electron.pageZoom) {
+                window.electron.pageZoom(action);
+              }
+            }
+          }, { passive: false });
+        })();
+      `);
+    });
 
     // Обработка fullscreen
     view.webContents.on('enter-html-full-screen', () => {
@@ -548,6 +538,28 @@ ipcMain.handle('zoom-reset', async (event, { tabId }) => {
   } catch (error) {
     console.error('Error resetting zoom:', error);
     return { success: false, error: String(error) };
+  }
+});
+
+// Обработчик zoom с клавиатуры (Ctrl + колесико)
+ipcMain.on('page-zoom', (event, { action }) => {
+  if (activeTabId === null) return;
+  
+  const view = tabs.get(activeTabId);
+  if (!view) return;
+  
+  const currentZoom = view.webContents.getZoomFactor();
+  let newZoom = currentZoom;
+  
+  if (action === 'zoom-in') {
+    newZoom = Math.min(currentZoom + 0.1, 3.0);
+  } else if (action === 'zoom-out') {
+    newZoom = Math.max(currentZoom - 0.1, 0.3);
+  }
+  
+  if (newZoom !== currentZoom) {
+    view.webContents.setZoomFactor(newZoom);
+    mainWindow?.webContents.send('tab-zoom-changed', { tabId: activeTabId, zoomLevel: newZoom });
   }
 });
 
