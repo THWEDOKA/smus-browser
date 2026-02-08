@@ -1,23 +1,24 @@
 import { useState, useEffect, useRef } from 'react';
-import { Home, Plus, Settings, X, ChevronLeft, ChevronRight, RotateCw, Lock, Unlock, Star, Minus, Maximize2, History, EyeOff, Download, Upload, Moon, Sun, CheckCircle, AlertCircle, Wifi, Link2, TrendingUp, Clock } from 'lucide-react';
+import { Home, Plus, Settings, X, ChevronLeft, ChevronRight, RotateCw, Lock, Unlock, Star, Minus, Maximize2, History, EyeOff, Download, Upload, Moon, Sun, CheckCircle, AlertCircle, Wifi, Link2, TrendingUp, Clock, ZoomIn, ZoomOut, Pause, Play, Trash2, FolderOpen } from 'lucide-react';
 import ErrorPage from './components/ErrorPage';
 
 interface Tab {
-  id: number;
-  title: string;
-  url: string;
-  isHome: boolean;
-  isSettings?: boolean;
-  isHistory?: boolean;
-  isPrivate?: boolean;
-  loading?: boolean;
-  isSecure?: boolean;
-  error?: {
-    code: number;
-    description: string;
-    url: string;
-    type: 'connection' | 'dns' | 'blocked' | 'timeout' | 'unknown';
-  } | null;
+   id: number;
+   title: string;
+   url: string;
+   isHome: boolean;
+   isSettings?: boolean;
+   isHistory?: boolean;
+   isDownloads?: boolean;
+   isPrivate?: boolean;
+   loading?: boolean;
+   isSecure?: boolean;
+   error?: {
+     code: number;
+     description: string;
+     url: string;
+     type: 'connection' | 'dns' | 'blocked' | 'timeout' | 'unknown';
+   } | null;
 }
 
 interface FavoriteSlot {
@@ -62,20 +63,24 @@ export default function App() {
     const saved = localStorage.getItem('smus_dark_mode');
     return saved ? JSON.parse(saved) : false;
   });
-  const [vpnKey, setVpnKey] = useState('');
-  const [isVpnConnected, setIsVpnConnected] = useState(false);
-  const [vpnStatus, setVpnStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected');
-  const [toasts, setToasts] = useState<Array<{ id: string; type: 'success' | 'error' | 'info'; message: string; duration?: number }>>([]);
-  const tabsRef = useRef(tabs);
-  const activeTabIdRef = useRef(activeTabId);
-  tabsRef.current = tabs;
-  activeTabIdRef.current = activeTabId;
+   const [vpnKey, setVpnKey] = useState('');
+   const [isVpnConnected, setIsVpnConnected] = useState(false);
+   const [vpnStatus, setVpnStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected');
+   const [toasts, setToasts] = useState<Array<{ id: string; type: 'success' | 'error' | 'info'; message: string; duration?: number }>>([]);
+   const [fullscreenTabId, setFullscreenTabId] = useState<number | null>(null);
+   const [zoomLevels, setZoomLevels] = useState<Record<number, number>>({});
+   const [downloads, setDownloads] = useState<Array<any>>([]);
+   const tabsRef = useRef(tabs);
+   const activeTabIdRef = useRef(activeTabId);
+   tabsRef.current = tabs;
+   activeTabIdRef.current = activeTabId;
 
-  const activeTab = tabs.find(t => t.id === activeTabId);
-  const showHomeScreen = activeTab?.isHome || false;
-  const showSettings = activeTab?.isSettings || false;
-  const showHistory = activeTab?.isHistory || false;
-  const isCurrentFavorite = favorites.some(f => f.url === activeTab?.url);
+   const activeTab = tabs.find(t => t.id === activeTabId);
+   const showHomeScreen = activeTab?.isHome || false;
+   const showSettings = activeTab?.isSettings || false;
+   const showHistory = activeTab?.isHistory || false;
+   const showDownloads = activeTab?.isDownloads || false;
+   const isCurrentFavorite = favorites.some(f => f.url === activeTab?.url);
 
   // Загружаем сохраненные данные
   useEffect(() => {
@@ -215,47 +220,97 @@ export default function App() {
       window.electron.hideAllViews();
     });
 
+    // Обработка fullscreen событий
+    window.electron.onEnterFullscreen((data) => {
+      setFullscreenTabId(data.tabId);
+    });
+
+    window.electron.onLeaveFullscreen((data) => {
+      setFullscreenTabId(null);
+    });
+
+    // Обработка zoom событий
+    window.electron.onZoomChanged((data) => {
+      setZoomLevels(prev => ({
+        ...prev,
+        [data.tabId]: data.zoomLevel
+      }));
+    });
+
+    // Обработка download событий
+    window.electron.onDownloadProgress((data) => {
+      setDownloads(prev => {
+        const index = prev.findIndex(d => d.id === data.id);
+        if (index >= 0) {
+          const updated = [...prev];
+          updated[index] = {
+            ...updated[index],
+            ...data,
+            progress: Math.round(data.progress * 100) / 100,
+          };
+          return updated;
+        }
+        return prev;
+      });
+    });
+
+    window.electron.onDownloadDone((data) => {
+      setDownloads(prev => {
+        const index = prev.findIndex(d => d.id === data.id);
+        if (index >= 0) {
+          const updated = [...prev];
+          updated[index] = {
+            ...updated[index],
+            state: data.state,
+            completed: true,
+          };
+          return updated;
+        }
+        return prev;
+      });
+    });
+
     window.electron.onAppShortcut((action) => {
-      const currentTabs = tabsRef.current;
-      const currentActiveId = activeTabIdRef.current;
-      switch (action) {
-        case 'new-tab':
-          handleAddTab();
-          break;
-        case 'new-private-tab':
-          openPrivateTab();
-          break;
-        case 'close-tab':
-          if (currentTabs.length > 1) handleCloseTab(currentActiveId);
-          break;
-        case 'next-tab': {
-          const idx = currentTabs.findIndex(t => t.id === currentActiveId);
-          if (idx >= 0 && idx < currentTabs.length - 1) handleTabClick(currentTabs[idx + 1].id);
-          break;
-        }
-        case 'prev-tab': {
-          const idx = currentTabs.findIndex(t => t.id === currentActiveId);
-          if (idx > 0) handleTabClick(currentTabs[idx - 1].id);
-          break;
-        }
-        case 'add-bookmark': {
-          const tab = currentTabs.find(t => t.id === currentActiveId);
-          if (tab && !tab.isHome && !tab.isSettings && !tab.isHistory && tab.url.startsWith('http')) {
-            setBookmarks(prev => {
-              if (prev.some(b => b.url === tab.url)) return prev;
-              const newId = prev.length > 0 ? Math.max(...prev.map(b => b.id)) + 1 : 1;
-              return [...prev, { id: newId, url: tab.url, title: tab.title }];
-            });
-          }
-          break;
-        }
-        case 'back':
-          handleBack();
-          break;
-        case 'forward':
-          handleForward();
-          break;
-        default:
+       const currentTabs = tabsRef.current;
+       const currentActiveId = activeTabIdRef.current;
+       switch (action) {
+         case 'new-tab':
+           handleAddTab();
+           break;
+         case 'new-private-tab':
+           openPrivateTab();
+           break;
+         case 'close-tab':
+           if (currentTabs.length > 1) handleCloseTab(currentActiveId);
+           break;
+         case 'next-tab': {
+           const idx = currentTabs.findIndex(t => t.id === currentActiveId);
+           if (idx >= 0 && idx < currentTabs.length - 1) handleTabClick(currentTabs[idx + 1].id);
+           break;
+         }
+         case 'prev-tab': {
+           const idx = currentTabs.findIndex(t => t.id === currentActiveId);
+           if (idx > 0) handleTabClick(currentTabs[idx - 1].id);
+           break;
+         }
+         case 'add-bookmark': {
+           const tab = currentTabs.find(t => t.id === currentActiveId);
+           if (tab && !tab.isHome && !tab.isSettings && !tab.isHistory && tab.url.startsWith('http')) {
+             setBookmarks(prev => {
+               if (prev.some(b => b.url === tab.url)) return prev;
+               const newId = prev.length > 0 ? Math.max(...prev.map(b => b.id)) + 1 : 1;
+               return [...prev, { id: newId, url: tab.url, title: tab.title }];
+             });
+           }
+           break;
+         }
+         case 'back':
+           handleBack();
+           break;
+         case 'forward':
+           handleForward();
+           break;
+         default:
           break;
       }
     });
@@ -418,12 +473,41 @@ export default function App() {
       isSecure: true
     };
 
-    setTabs([...tabs, newTab]);
-    setActiveTabId(nextTabId);
-    setNextTabId(nextTabId + 1);
-  };
+     setTabs([...tabs, newTab]);
+     setActiveTabId(nextTabId);
+     setNextTabId(nextTabId + 1);
+   };
 
-  const handleCloseTab = async (id: number) => {
+   const openDownloads = async () => {
+     // Скрываем все BrowserView перед открытием загрузок
+     if (window.electron) {
+       await window.electron.hideAllViews();
+     }
+
+     // Проверяем есть ли уже вкладка загрузок
+     const downloadsTab = tabs.find(t => t.isDownloads);
+     if (downloadsTab) {
+       setActiveTabId(downloadsTab.id);
+       return;
+     }
+
+     // Создаем новую вкладку загрузок
+     const newTab: Tab = {
+       id: nextTabId,
+       title: 'Загрузки',
+       url: 'downloads',
+       isHome: false,
+       isDownloads: true,
+       loading: false,
+       isSecure: true
+     };
+
+     setTabs([...tabs, newTab]);
+     setActiveTabId(nextTabId);
+     setNextTabId(nextTabId + 1);
+   };
+
+   const handleCloseTab = async (id: number) => {
     if (tabs.length === 1) return;
 
     const newTabs = tabs.filter(tab => tab.id !== id);
@@ -655,13 +739,25 @@ export default function App() {
     }
   };
 
-  const handleReload = async () => {
-    if (window.electron) {
-      await window.electron.reload(activeTabId);
-    }
-  };
+   const handleReload = async () => {
+     if (window.electron) {
+       await window.electron.reload(activeTabId);
+     }
+   };
 
-  const handleMinimize = async () => {
+   const handleZoomIn = async () => {
+     if (window.electron) {
+       await window.electron.zoomIn(activeTabId);
+     }
+   };
+
+   const handleZoomOut = async () => {
+     if (window.electron) {
+       await window.electron.zoomOut(activeTabId);
+     }
+   };
+
+   const handleMinimize = async () => {
     if (window.electron) {
       await window.electron.minimizeWindow();
     }
@@ -708,12 +804,14 @@ export default function App() {
          </svg>
        </div>
 
-      {/* Title Bar: вкладки слева, кнопки управления окном справа в одной строке */}
-      <div
-        className="relative z-10 flex items-center gap-2 px-3 py-2 min-h-[44px] drag-region"
-        onDragStart={(e) => e.preventDefault()}
-        onDrag={(e) => e.preventDefault()}
-      >
+       {/* Title Bar: вкладки слева, кнопки управления окном справа в одной строке */}
+       <div
+         className={`relative z-10 flex items-center gap-2 px-3 py-2 min-h-[44px] drag-region transition-all duration-300 ${
+           fullscreenTabId ? 'opacity-0 pointer-events-none h-0 py-0 overflow-hidden' : 'opacity-100'
+         }`}
+         onDragStart={(e) => e.preventDefault()}
+         onDrag={(e) => e.preventDefault()}
+       >
         <div className="flex items-center gap-2 flex-1 min-w-0 no-drag">
            {tabs.map((tab) => (
              <div
@@ -773,20 +871,37 @@ export default function App() {
            >
              <EyeOff size={20} className="text-white" />
            </button>
-           <button
-             onClick={openHistory}
-             className="p-1.5 hover:bg-white/10 rounded-full transition-colors"
-             title="История"
-           >
-             <History size={20} className="text-white" />
-           </button>
-           <button
-             onClick={openSettings}
-             className="p-1.5 hover:bg-white/10 rounded-full transition-colors"
-             title="Настройки"
-           >
-             <Settings size={20} className="text-white" />
-           </button>
+            <button
+              onClick={openHistory}
+              className="p-1.5 hover:bg-white/10 rounded-full transition-colors"
+              title="История"
+            >
+              <History size={20} className="text-white" />
+            </button>
+            <button
+              onClick={() => {
+                window.electron.getDownloads().then(dlList => {
+                  setDownloads(dlList);
+                  openDownloads();
+                });
+              }}
+              className="p-1.5 hover:bg-white/10 rounded-full transition-colors relative"
+              title="Загрузки"
+            >
+              <Download size={20} className="text-white" />
+              {downloads.length > 0 && (
+                <span className="absolute top-0 right-0 w-5 h-5 bg-red-500 text-white text-xs rounded-full flex items-center justify-center">
+                  {downloads.filter(d => d.state === 'in-progress').length || ''}
+                </span>
+              )}
+            </button>
+            <button
+              onClick={openSettings}
+              className="p-1.5 hover:bg-white/10 rounded-full transition-colors"
+              title="Настройки"
+            >
+              <Settings size={20} className="text-white" />
+            </button>
            <button
              onClick={() => setIsDarkMode(!isDarkMode)}
              className="p-1.5 hover:bg-white/10 rounded-full transition-colors"
@@ -806,10 +921,12 @@ export default function App() {
          </div>
       </div>
 
-       {/* Address Bar */}
-       {!showHomeScreen && !showSettings && !showHistory && (
-         <div className="relative z-10 px-3 pb-2 no-drag">
-           <div className={`flex items-center gap-2 rounded-full px-3 py-2 transition-colors ${isDarkMode ? 'bg-[#2a2a2a]' : 'bg-white'}`}>
+         {/* Address Bar */}
+         {!showHomeScreen && !showSettings && !showHistory && !showDownloads && (
+          <div className={`relative z-10 px-3 pb-2 no-drag transition-all duration-300 ${
+            fullscreenTabId ? 'opacity-0 pointer-events-none h-0 overflow-hidden' : 'opacity-100'
+          }`}>
+            <div className={`flex items-center gap-2 rounded-full px-3 py-2 transition-colors ${isDarkMode ? 'bg-[#2a2a2a]' : 'bg-white'}`}>
              <button onClick={handleBack} className={`p-1 rounded-full transition-colors ${isDarkMode ? 'hover:bg-[#3a3a3a]' : 'hover:bg-gray-100'}`}>
                <ChevronLeft size={18} className={isDarkMode ? 'text-white' : 'text-black'} />
              </button>
@@ -828,25 +945,50 @@ export default function App() {
                )}
              </div>
 
-             <input
-               type="text"
-               value={addressBarValue}
-               onChange={(e) => setAddressBarValue(e.target.value)}
-               onKeyDown={(e) => e.key === 'Enter' && handleAddressBarNavigate()}
-               placeholder="Введите URL или поисковый запрос..."
-               className={`flex-1 px-2 py-1 text-sm bg-transparent outline-none ${isDarkMode ? 'text-white placeholder:text-gray-500' : 'text-black placeholder:text-gray-400'}`}
-             />
+              <input
+                type="text"
+                value={addressBarValue}
+                onChange={(e) => setAddressBarValue(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleAddressBarNavigate()}
+                placeholder="Введите URL или поисковый запрос..."
+                className={`flex-1 px-2 py-1 text-sm bg-transparent outline-none ${isDarkMode ? 'text-white placeholder:text-gray-500' : 'text-black placeholder:text-gray-400'}`}
+              />
 
-             <button
-               onClick={toggleFavorite}
-               className={`p-1 rounded-full transition-colors ${isDarkMode ? 'hover:bg-[#3a3a3a]' : 'hover:bg-gray-100'}`}
-               disabled={activeTab?.isHome || activeTab?.isSettings}
-             >
-               <Star
-                 size={18}
-                 className={`${isCurrentFavorite ? 'text-yellow-500 fill-yellow-500' : isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}
-               />
-             </button>
+              {/* Zoom buttons */}
+              <button
+                onClick={handleZoomOut}
+                className={`p-1 rounded-full transition-colors ${isDarkMode ? 'hover:bg-[#3a3a3a]' : 'hover:bg-gray-100'}`}
+                title="Уменьшить масштаб"
+                disabled={activeTab?.isHome || activeTab?.isSettings || activeTab?.isHistory}
+              >
+                <ZoomOut
+                  size={16}
+                  className={isDarkMode ? 'text-gray-500' : 'text-gray-500'}
+                />
+              </button>
+
+              <button
+                onClick={handleZoomIn}
+                className={`p-1 rounded-full transition-colors ${isDarkMode ? 'hover:bg-[#3a3a3a]' : 'hover:bg-gray-100'}`}
+                title="Увеличить масштаб"
+                disabled={activeTab?.isHome || activeTab?.isSettings || activeTab?.isHistory}
+              >
+                <ZoomIn
+                  size={16}
+                  className={isDarkMode ? 'text-gray-500' : 'text-gray-500'}
+                />
+              </button>
+
+              <button
+                onClick={toggleFavorite}
+                className={`p-1 rounded-full transition-colors ${isDarkMode ? 'hover:bg-[#3a3a3a]' : 'hover:bg-gray-100'}`}
+                disabled={activeTab?.isHome || activeTab?.isSettings}
+              >
+                <Star
+                  size={18}
+                  className={`${isCurrentFavorite ? 'text-yellow-500 fill-yellow-500' : isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}
+                />
+              </button>
            </div>
          </div>
        )}
@@ -1389,10 +1531,210 @@ export default function App() {
              )}
            </div>
          </div>
-       )}
+        )}
 
-      {/* Error Page */}
-      {activeTab && activeTab.error && !showHomeScreen && !showSettings && !showHistory && (
+        {/* Downloads Tab */}
+        {showDownloads && (
+          <div className={`relative z-10 flex-1 overflow-y-auto no-drag transition-colors duration-300 ${isDarkMode ? 'bg-[#1a1a1a]' : 'bg-[#32463d]'}`}>
+            <div className="max-w-6xl mx-auto px-6 py-6">
+              {/* Header */}
+              <div className="mb-8">
+                <h1 className={`text-5xl font-bold mb-2 ${isDarkMode ? 'text-green-400' : 'text-green-300'}`} style={{ fontFamily: "'Montserrat', sans-serif" }}>
+                  Загрузки
+                </h1>
+                <p className={`text-sm font-light ${isDarkMode ? 'text-gray-400' : 'text-white/70'}`}>
+                  {downloads.length === 0 ? 'Нет загрузок' : `${downloads.length} файл${downloads.length === 1 ? '' : 'ов'}`}
+                </p>
+              </div>
+
+              {downloads.length === 0 ? (
+                <div className={`rounded-2xl p-12 text-center backdrop-blur-sm border ${isDarkMode ? 'bg-white/5 border-white/10' : 'bg-white/10 border-white/20'}`}>
+                  <Download size={48} className={`mx-auto mb-4 ${isDarkMode ? 'text-gray-500' : 'text-white/50'}`} />
+                  <p className={`text-xl font-light ${isDarkMode ? 'text-gray-400' : 'text-white/70'}`}>
+                    Загрузок нет
+                  </p>
+                  <p className={`text-sm font-light mt-2 ${isDarkMode ? 'text-gray-500' : 'text-white/60'}`}>
+                    Файлы которые вы скачиваете появятся здесь
+                  </p>
+                  <button
+                    onClick={() => window.electron.openDownloadsFolder()}
+                    className={`mt-6 px-6 py-3 rounded-xl font-light transition-all ${
+                      isDarkMode
+                        ? 'bg-green-500/20 hover:bg-green-500/30 text-white border border-green-500/30'
+                        : 'bg-green-500/30 hover:bg-green-500/40 text-white border border-green-400/50'
+                    }`}
+                  >
+                    <FolderOpen size={18} className="inline mr-2" />
+                    Открыть папку загрузок
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {downloads.map((download, idx) => {
+                    const progress = download.progress || 0;
+                    const isCompleted = download.state === 'completed';
+                    const isCancelled = download.state === 'cancelled';
+                    
+                    // Форматируем размер файла
+                    const formatBytes = (bytes: number) => {
+                      if (bytes === 0) return '0 Bytes';
+                      const k = 1024;
+                      const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+                      const i = Math.floor(Math.log(bytes) / Math.log(k));
+                      return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+                    };
+
+                    // Форматируем скорость
+                    const formatSpeed = (bytesPerSec: number) => {
+                      if (bytesPerSec === 0) return '0 B/s';
+                      const k = 1024;
+                      const sizes = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
+                      const i = Math.floor(Math.log(bytesPerSec) / Math.log(k));
+                      return Math.round((bytesPerSec / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+                    };
+
+                    return (
+                      <div
+                        key={download.id}
+                        className={`rounded-2xl p-6 backdrop-blur-sm border transition-all ${
+                          isDarkMode
+                            ? 'bg-gradient-to-r from-white/5 to-white/0 border-white/10 hover:border-green-500/30'
+                            : 'bg-gradient-to-r from-white/10 to-white/0 border-white/20 hover:border-green-400/50'
+                        }`}
+                        style={{ animation: `scale-in 0.6s ease-out`, animationDelay: `${idx * 0.05}s` }}
+                      >
+                        {/* File Info */}
+                        <div className="flex items-start gap-4 mb-4">
+                          <div className={`w-12 h-12 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                            isDarkMode ? 'bg-white/10' : 'bg-white/20'
+                          }`}>
+                            <Download size={24} className={isDarkMode ? 'text-green-400' : 'text-green-300'} />
+                          </div>
+                          
+                          <div className="flex-1 min-w-0">
+                            <h3 className={`font-light truncate ${isDarkMode ? 'text-white' : 'text-white'}`}>
+                              {download.filename}
+                            </h3>
+                            <p className={`text-sm font-light mt-1 ${isDarkMode ? 'text-gray-400' : 'text-white/70'}`}>
+                              {formatBytes(download.totalBytes)}
+                              {download.speed > 0 && ` • ${formatSpeed(download.speed)}`}
+                            </p>
+                          </div>
+
+                          {/* Status Badge */}
+                          <div className={`px-3 py-1 rounded-full text-xs font-light whitespace-nowrap ${
+                            isCompleted 
+                              ? isDarkMode 
+                                ? 'bg-green-500/20 text-green-300' 
+                                : 'bg-green-500/30 text-green-200'
+                              : isCancelled
+                              ? isDarkMode
+                                ? 'bg-red-500/20 text-red-300'
+                                : 'bg-red-500/30 text-red-200'
+                              : download.paused
+                              ? isDarkMode
+                                ? 'bg-yellow-500/20 text-yellow-300'
+                                : 'bg-yellow-500/30 text-yellow-200'
+                              : isDarkMode
+                              ? 'bg-blue-500/20 text-blue-300'
+                              : 'bg-blue-500/30 text-blue-200'
+                          }`}>
+                            {isCompleted ? 'Завершено' : isCancelled ? 'Отменено' : download.paused ? 'На паузе' : 'Загрузка...'}
+                          </div>
+                        </div>
+
+                        {/* Progress Bar */}
+                        {!isCompleted && !isCancelled && (
+                          <div className="mb-4">
+                            <div className={`h-2 rounded-full overflow-hidden ${isDarkMode ? 'bg-white/10' : 'bg-white/20'}`}>
+                              <div
+                                className="h-full bg-gradient-to-r from-green-400 to-green-600 transition-all duration-300 rounded-full"
+                                style={{ width: `${progress}%` }}
+                              />
+                            </div>
+                            <p className={`text-xs font-light mt-2 ${isDarkMode ? 'text-gray-500' : 'text-white/60'}`}>
+                              {formatBytes(download.receivedBytes)} / {formatBytes(download.totalBytes)} • {Math.round(progress)}%
+                            </p>
+                          </div>
+                        )}
+
+                        {/* Buttons */}
+                        <div className="flex gap-2">
+                          {!isCompleted && !isCancelled && (
+                            <>
+                              {!download.paused ? (
+                                <button
+                                  onClick={() => window.electron.pauseDownload(download.id)}
+                                  className={`flex-1 px-4 py-2 rounded-lg font-light text-sm transition-all ${
+                                    isDarkMode
+                                      ? 'bg-yellow-500/20 hover:bg-yellow-500/30 text-yellow-300 border border-yellow-500/30'
+                                      : 'bg-yellow-500/30 hover:bg-yellow-500/40 text-white border border-yellow-400/50'
+                                  }`}
+                                >
+                                  <Pause size={14} className="inline mr-1" />
+                                  Пауза
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={() => window.electron.resumeDownload(download.id)}
+                                  className={`flex-1 px-4 py-2 rounded-lg font-light text-sm transition-all ${
+                                    isDarkMode
+                                      ? 'bg-green-500/20 hover:bg-green-500/30 text-green-300 border border-green-500/30'
+                                      : 'bg-green-500/30 hover:bg-green-500/40 text-white border border-green-400/50'
+                                  }`}
+                                >
+                                  <Play size={14} className="inline mr-1" />
+                                  Возобновить
+                                </button>
+                              )}
+                              <button
+                                onClick={() => window.electron.cancelDownload(download.id)}
+                                className={`flex-1 px-4 py-2 rounded-lg font-light text-sm transition-all ${
+                                  isDarkMode
+                                    ? 'bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30'
+                                    : 'bg-red-500/30 hover:bg-red-500/40 text-white border border-red-400/50'
+                                }`}
+                              >
+                                <X size={14} className="inline mr-1" />
+                                Отмена
+                              </button>
+                            </>
+                          )}
+                          {isCompleted && (
+                            <button
+                              onClick={() => window.electron.openDownloadsFolder()}
+                              className={`flex-1 px-4 py-2 rounded-lg font-light text-sm transition-all ${
+                                isDarkMode
+                                  ? 'bg-green-500/20 hover:bg-green-500/30 text-green-300 border border-green-500/30'
+                                  : 'bg-green-500/30 hover:bg-green-500/40 text-white border border-green-400/50'
+                              }`}
+                            >
+                              <FolderOpen size={14} className="inline mr-1" />
+                              Открыть
+                            </button>
+                          )}
+                          <button
+                            onClick={() => window.electron.removeDownload(download.id)}
+                            className={`px-4 py-2 rounded-lg font-light text-sm transition-all ${
+                              isDarkMode
+                                ? 'bg-white/10 hover:bg-white/20 text-white/70 border border-white/20'
+                                : 'bg-white/20 hover:bg-white/30 text-white/70 border border-white/30'
+                            }`}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+       {/* Error Page */}
+       {activeTab && activeTab.error && !showHomeScreen && !showSettings && !showHistory && !showDownloads && (
         <ErrorPage
           errorType={activeTab.error.type}
           url={activeTab.error.url}
@@ -1411,8 +1753,8 @@ export default function App() {
         />
       )}
 
-       {/* Loading Indicator - Enhanced */}
-       {activeTab && activeTab.loading && !activeTab.error && !showHomeScreen && !showSettings && !showHistory && (
+        {/* Loading Indicator - Enhanced */}
+        {activeTab && activeTab.loading && !activeTab.error && !showHomeScreen && !showSettings && !showHistory && !showDownloads && (
          <div className={`absolute top-[calc(44px+2.5rem)] left-0 right-0 bottom-0 z-50 flex items-center justify-center backdrop-blur-md transition-colors ${isDarkMode ? 'bg-gradient-to-b from-[#1a1a1a]/90 to-[#0a0a0a]/95' : 'bg-gradient-to-b from-[#32463d]/90 to-[#1a2a24]/95'}`}>
            <div className="flex flex-col items-center gap-8 max-w-md">
              {/* Animated Logo with Glow */}
