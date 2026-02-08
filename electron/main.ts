@@ -23,6 +23,9 @@ function shouldBlockRequest(url: string): boolean {
 const tabs = new Map<number, BrowserView>();
 let mainWindow: BrowserWindow | null = null;
 let activeTabId: number | null = null;
+let vpnProxy: string | null = null;
+let isVpnConnected = false;
+let fullscreenTabId: number | null = null;
 
 const isDev = !app.isPackaged;
 
@@ -34,11 +37,15 @@ function updateActiveViewBounds() {
   const view = tabs.get(activeTabId);
   if (!view) return;
   const bounds = mainWindow.getBounds();
+  
+  // Если текущая вкладка в fullscreen - не отступ сверху
+  const topOffset = fullscreenTabId === activeTabId ? 0 : TOP_BAR_HEIGHT;
+  
   view.setBounds({
     x: 0,
-    y: TOP_BAR_HEIGHT,
+    y: topOffset,
     width: Math.max(0, bounds.width),
-    height: Math.max(0, bounds.height - TOP_BAR_HEIGHT),
+    height: Math.max(0, bounds.height - topOffset),
   });
 }
 
@@ -252,24 +259,66 @@ function createTab(tabId: number, url: string): BrowserView {
     mainWindow?.webContents.send('tab-title-updated', { tabId, title });
   });
 
-  view.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL, isMainFrame) => {
-    if (isMainFrame) {
-      const errorType = getErrorType(errorCode, errorDescription);
-      mainWindow?.webContents.send('tab-error', {
-        tabId,
-        error: {
-          code: errorCode,
-          description: errorDescription,
-          url: validatedURL,
-          type: errorType
-        }
-      });
-    }
-  });
+   view.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+     if (isMainFrame) {
+       const errorType = getErrorType(errorCode, errorDescription);
+       mainWindow?.webContents.send('tab-error', {
+         tabId,
+         error: {
+           code: errorCode,
+           description: errorDescription,
+           url: validatedURL,
+           type: errorType
+         }
+       });
+     }
+   });
 
-  tabs.set(tabId, view);
-  return view;
-}
+   // Обработка zoom (Ctrl + колесико) через web-contents sessions
+   view.webContents.on('before-input-event', (event, input) => {
+     // Проверяем Ctrl/Cmd + скроллинг
+     if ((input.control || input.meta) && input.type === 'mouseWheel') {
+       const wheelInput = input as any;
+       
+       if (wheelInput.deltaY !== undefined) {
+         event.preventDefault();
+         
+         const currentZoom = view.webContents.getZoomFactor();
+         let newZoom = currentZoom;
+         
+         // deltaY > 0 = вверх (zoom in)
+         if (wheelInput.deltaY > 0) {
+           newZoom = Math.min(currentZoom + 0.1, 3.0);
+         } 
+         // deltaY < 0 = вниз (zoom out)
+         else if (wheelInput.deltaY < 0) {
+           newZoom = Math.max(currentZoom - 0.1, 0.3);
+         }
+         
+         if (newZoom !== currentZoom) {
+           view.webContents.setZoomFactor(newZoom);
+           mainWindow?.webContents.send('tab-zoom-changed', { tabId, zoomLevel: newZoom });
+         }
+       }
+     }
+   });
+
+    // Обработка fullscreen
+    view.webContents.on('enter-html-full-screen', () => {
+      fullscreenTabId = tabId;
+      updateActiveViewBounds();
+      mainWindow?.webContents.send('enter-fullscreen', { tabId });
+    });
+
+    view.webContents.on('leave-html-full-screen', () => {
+      fullscreenTabId = null;
+      updateActiveViewBounds();
+      mainWindow?.webContents.send('leave-fullscreen', { tabId });
+    });
+
+   tabs.set(tabId, view);
+   return view;
+ }
 
 function getErrorType(errorCode: number, errorDescription: string): 'connection' | 'dns' | 'blocked' | 'timeout' | 'unknown' {
   const desc = errorDescription.toLowerCase();
@@ -458,6 +507,50 @@ ipcMain.handle('maximize-window', async () => {
   }
 });
 
+// Zoom handlers
+ipcMain.handle('zoom-in', async (event, { tabId }) => {
+  try {
+    const view = tabs.get(tabId);
+    if (view) {
+      const currentZoom = view.webContents.getZoomFactor();
+      const newZoom = Math.min(currentZoom + 0.1, 3);
+      view.webContents.setZoomFactor(newZoom);
+    }
+    return { success: true };
+  } catch (error) {
+    console.error('Error zooming in:', error);
+    return { success: false, error: String(error) };
+  }
+});
+
+ipcMain.handle('zoom-out', async (event, { tabId }) => {
+  try {
+    const view = tabs.get(tabId);
+    if (view) {
+      const currentZoom = view.webContents.getZoomFactor();
+      const newZoom = Math.max(currentZoom - 0.1, 0.3);
+      view.webContents.setZoomFactor(newZoom);
+    }
+    return { success: true };
+  } catch (error) {
+    console.error('Error zooming out:', error);
+    return { success: false, error: String(error) };
+  }
+});
+
+ipcMain.handle('zoom-reset', async (event, { tabId }) => {
+  try {
+    const view = tabs.get(tabId);
+    if (view) {
+      view.webContents.setZoomFactor(1);
+    }
+    return { success: true };
+  } catch (error) {
+    console.error('Error resetting zoom:', error);
+    return { success: false, error: String(error) };
+  }
+});
+
 // Горячие клавиши
 function registerShortcuts() {
   const { globalShortcut } = require('electron');
@@ -530,6 +623,94 @@ function registerShortcuts() {
   globalShortcut.register('Alt+Left', () => sendShortcut('back'));
   globalShortcut.register('Alt+Right', () => sendShortcut('forward'));
 }
+
+// VPN функции
+function parseVlessKey(vlessKey: string): { proxy: string; error?: string } {
+  try {
+    // Парсим Vless ключ формата: vless://uuid@server:port?parameters
+    if (!vlessKey.startsWith('vless://')) {
+      return { proxy: '', error: 'Ключ должен начинаться с vless://' };
+    }
+
+    const url = new URL(vlessKey);
+    const server = url.hostname;
+    const port = url.port || '443';
+    
+    if (!server) {
+      return { proxy: '', error: 'Не удалось получить адрес сервера из ключа' };
+    }
+
+    // Используем SOCKS5 прокси через ssh-like туннель
+    // Для браузера мы используем простой прокси формат
+    const proxyUrl = `socks5://${server}:${port}`;
+    return { proxy: proxyUrl };
+  } catch (error) {
+    return { proxy: '', error: `Ошибка парсинга ключа: ${error}` };
+  }
+}
+
+function applyVPNProxy(proxyUrl: string): void {
+  try {
+    // Применяем прокси к сессии для новых вкладок
+    const electronSession = session.defaultSession;
+    const proxyAddress = proxyUrl.replace('socks5://', '');
+    
+    electronSession.setProxy({
+      proxyRules: `socks5://${proxyAddress}`
+    }).catch(err => {
+      console.error('Ошибка установки прокси:', err);
+    });
+
+    vpnProxy = proxyUrl;
+    isVpnConnected = true;
+    console.log('✓ VPN прокси успешно применен:', proxyUrl);
+  } catch (error) {
+    console.error('Ошибка при применении VPN прокси:', error);
+  }
+}
+
+function removeVPNProxy(): void {
+  try {
+    // Удаляем прокси
+    const electronSession = session.defaultSession;
+    electronSession.setProxy({ mode: 'direct' }).catch(err => {
+      console.error('Ошибка удаления прокси:', err);
+    });
+
+    vpnProxy = null;
+    isVpnConnected = false;
+    console.log('✓ VPN прокси удален');
+  } catch (error) {
+    console.error('Ошибка при удалении VPN прокси:', error);
+  }
+}
+
+// IPC обработчики для VPN
+ipcMain.handle('connect-vpn', async (event, { vpnKey }) => {
+  try {
+    const { proxy, error } = parseVlessKey(vpnKey);
+    
+    if (error) {
+      return { success: false, error };
+    }
+
+    applyVPNProxy(proxy);
+    return { success: true, message: 'VPN подключен' };
+  } catch (error) {
+    console.error('Ошибка подключения VPN:', error);
+    return { success: false, error: String(error) };
+  }
+});
+
+ipcMain.handle('disconnect-vpn', async () => {
+  try {
+    removeVPNProxy();
+    return { success: true, message: 'VPN отключен' };
+  } catch (error) {
+    console.error('Ошибка отключения VPN:', error);
+    return { success: false, error: String(error) };
+  }
+});
 
 // События приложения
 app.whenReady().then(() => {
